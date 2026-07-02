@@ -256,50 +256,144 @@ by running `build.py` — provided the book PDF is restored to
 
 ---
 
-## 11. Deploying to a web host (e.g. Digital Pacific)
+## 11. Deploying to the web server (Digital Pacific / cPanel)
 
 The site is **100% static** — plain HTML, CSS and images, no database or
-server-side code — so it can be served by any ordinary web host. Digital
-Pacific's shared hosting is **cPanel-based**, so deploying means *copying the
-contents of `src/` into the account's `public_html` folder.*
+server-side code — so it is served by copying the **contents of `src/`** into
+a folder under the hosting account's `public_html`. It uses **relative
+links**, so it works unchanged at the domain root *or* in any subfolder.
 
-**One-time setup**
-1. Buy a hosting plan (their entry-level shared/cPanel plan is plenty) and
-   register or point a **domain** (e.g. an ANGFA domain) at it.
-2. In cPanel, note your FTP/SFTP host, username and password, and turn on
-   **AutoSSL** (free HTTPS) for the domain.
+### 11.1 The live deployment (as configured)
 
-**Each deployment**
-1. Rebuild locally so `src/` is current:
-   `cd generator && PYTHONIOENCODING=utf-8 python build.py`
-2. Upload the **contents of `src/`** (i.e. `index.html`, `style.css`,
-   `assets/`, `rainbowfish_species/`, … — *not* the `src` folder itself) into
-   `public_html`. Choose one method:
-   - **cPanel File Manager** — zip `src/`, upload the zip into `public_html`,
-     "Extract", then move the files up one level if they landed in a `src/`
-     subfolder. Simplest for a first upload.
-   - **SFTP/FTP** (e.g. FileZilla) — drag the contents of `src/` into
-     `public_html`. Best for repeat updates (upload only changed files).
-   - **cPanel Git Version Control** — only viable if you also commit `src/`
-     (it is git-ignored by default), so usually not worth it here.
-3. Visit the domain and click through: home page, a couple of species
-   accounts, the index pages, and check images load.
+- **Host / provider:** Digital Pacific, cPanel account `angfa`, primary
+  domain **angfa.org.au**.
+- **FTPS:** host `vmcp62.digitalpacific.com.au`, port 21, **explicit TLS**.
+  (The shared TLS cert doesn't match that hostname, so an FTPS client must be
+  told *not* to verify the cert; the account's own site cert on
+  `angfa.org.au` is valid.)
+- **Account home:** `/home2/angfa`; web root `/home2/angfa/public_html`
+  (this holds the **live ANGFA Joomla site — do not touch it**).
+- **This site lives in a subfolder:** `public_html/horf_test/` →
+  **https://angfa.org.au/horf_test/**.
 
-**Things that matter on a Linux host**
-- **Case-sensitivity:** the server treats `Foo.JPG` and `foo.jpg` as
-  different files (Windows doesn't). Our slugs are all lowercase and links
-  are generated to match, so this is fine — just don't rename files by hand.
-- **Relative paths:** every link uses relative paths, so the site works at a
-  domain root *or* in a subfolder without changes.
-- **Entry page:** `src/index.html` becomes the site home automatically.
-- **Size:** `src/` is fairly large (many figures). A first upload is quicker
-  as a single zip than thousands of individual FTP transfers.
+> **Credentials are NOT stored in this repo.** The cPanel/FTP password is held
+> separately; supply it to the scripts below via an environment variable
+> (`FTPPASS`). Rotate it if it is ever exposed.
 
-**Before going public — rights check.** The book text/figures are
-republished under ANGFA's confirmed rights. The newly added accounts use
-**figures from third-party *Fishes of Sahul* articles** (credited in each
-caption). Confirm ANGFA/the authors are happy for those photos to appear on
-the public site before launch.
+### 11.2 Find the account's absolute path (needed for password protection)
+
+Basic-Auth needs the *filesystem* path of the auth file. Get it from the
+cPanel API (returns e.g. `/home2/angfa/public_html/horf_test`):
+
+```bash
+curl -sS -k -u "angfa:$FTPPASS" \
+  "https://vmcp62.digitalpacific.com.au:2083/execute/Fileman/list_files?dir=%2Fpublic_html&types=dir"
+```
+
+### 11.3 Upload the site (FTPS, resumable)
+
+Rebuild first (`python build.py`), then run a recursive FTPS uploader. Python's
+built-in `ftplib` (FTP over explicit TLS) is the most reliable tool here — no
+extra software needed. The uploader below **mirrors `src/` into
+`public_html/horf_test/`**, creates directories as needed, **skips files whose
+size already matches** (so it is resumable and fast for re-deploys), and
+retries with reconnect on transient TLS data-channel hiccups (a few are
+normal). ~200 MB / ~880 files takes roughly 7 minutes.
+
+```python
+# upload_site.py  —  run as:  FTPPASS='…' python -u upload_site.py
+import os, ssl, ftplib, time
+from pathlib import Path
+HOST='vmcp62.digitalpacific.com.au'; PWD=os.environ['FTPPASS']
+SRC=Path(r"…\jobs\unmack-fish-page\src")     # local build output
+BASE='public_html/horf_test'                 # remote target folder
+def connect():
+    ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+    f=ftplib.FTP_TLS(HOST, timeout=120, context=ctx); f.login('angfa',PWD); f.prot_p(); return f
+f=connect()
+files=[]; dirs=[]
+for p in sorted(SRC.rglob('*')):
+    rel=p.relative_to(SRC).as_posix()
+    (dirs if p.is_dir() else files).append((rel if p.is_dir() else (str(p),rel,p.stat().st_size)))
+for d in dirs:
+    try: f.mkd(BASE+'/'+d)
+    except Exception: pass
+for lp, rel, size in files:
+    remote=BASE+'/'+rel
+    try:
+        if f.size(remote)==size: continue          # already uploaded, skip
+    except Exception: pass
+    for attempt in range(4):
+        try:
+            with open(lp,'rb') as fh: f.storbinary('STOR '+remote, fh); break
+        except Exception:
+            try: f.quit()
+            except Exception: pass
+            time.sleep(3); f=connect()
+f.quit()
+```
+
+Alternative for a one-off or non-technical upload: zip `src/`'s contents,
+upload the zip via **cPanel File Manager**, and "Extract" it inside the target
+folder.
+
+### 11.4 Keep it private (password protection)
+
+To restrict the folder to reviewers, put an `.htaccess` + `.htpasswd` **inside
+the folder** (self-contained — do *not* modify the account-level
+`.htpasswds`). Create the password hash with `openssl passwd -apr1 'THEPASS'`,
+write it to `.htpasswd` as `user:HASH`, and upload both files. `.htaccess`:
+
+```apache
+DirectoryIndex index.html
+<IfModule mod_rewrite.c>
+RewriteEngine Off          # ignore the parent Joomla rewrite rules
+</IfModule>
+ErrorDocument 401 default  # IMPORTANT: restore the real 401 login prompt …
+ErrorDocument 403 default  # … otherwise the parent site's error handling
+ErrorDocument 404 default  # … swallows the 401 into a Joomla 404 page
+AuthType Basic
+AuthName "HORF review - private"
+AuthUserFile /home2/angfa/public_html/horf_test/.htpasswd
+Require valid-user
+```
+
+Verify: no credentials → **401** (`WWW-Authenticate` header present); correct
+credentials → **200**. `.htpasswd` itself must return **403** (Apache blocks
+`.ht*`).
+
+### 11.5 Make it public
+
+To open the folder to everyone, **remove the auth** — upload an `.htaccess`
+with the auth lines stripped (keep the rest), and delete `.htpasswd`:
+
+```apache
+DirectoryIndex index.html
+<IfModule mod_rewrite.c>
+RewriteEngine Off
+</IfModule>
+ErrorDocument 401 default
+ErrorDocument 403 default
+ErrorDocument 404 default
+```
+
+Verify: no credentials → **200**. To let search engines index it, also change
+`src/robots.txt` from `Disallow: /` to allow (it is currently set to *no
+index*, so the site is public-by-link but not in Google). A tidier public URL
+(rename the folder, or a `rainbowfish.angfa.org.au` subdomain) works with the
+same files — the relative links don't care about the path.
+
+### 11.6 Notes / gotchas for the server
+- **Case-sensitivity:** Linux treats `Foo.JPG` ≠ `foo.jpg`. Our slugs are all
+  lowercase and links match — don't rename files by hand.
+- **Confine writes to the site's own folder.** The live ANGFA Joomla site
+  shares `public_html`; only ever create/modify files inside `horf_test/`
+  (or whatever folder this site occupies).
+- **HTTPS** is automatic via cPanel AutoSSL on `angfa.org.au`.
+- **Rights check before public launch.** Book text/figures are republished
+  under ANGFA's confirmed rights; the new-species accounts use **figures from
+  third-party *Fishes of Sahul* articles** (credited in captions). Confirm the
+  authors/ANGFA are happy for those to appear publicly.
 
 I can't upload for you (it needs the hosting credentials), but I can produce
 a ready-to-upload **zip of `src/`** and a per-release checklist on request.
