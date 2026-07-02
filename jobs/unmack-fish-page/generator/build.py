@@ -1308,6 +1308,12 @@ def main():
     undet = build_undetermined(list(range(416, 431)), "rainbowfish_species")
     linked[("__undetermined__", "Rainbowfishes (undetermined)")] = undet
 
+    # New-species accounts compiled from Fishes of Sahul papers (not in the 2011 book).
+    # Figures are rendered from the source PDFs (pixmap clip = correct orientation).
+    import runpy
+    for _m in ("extract_figs", "make_garylangei", "make_jakora"):
+        runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), _m + ".py"))
+
     build_sections(spset, citations, linked)
     SECTION_BUILD = [
         ("Introduction", "introduction", None, range(17, 20)),
