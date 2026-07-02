@@ -8,7 +8,7 @@ HTML (assets/reference/live_site) and stamps a complete static site into src/.
 The left-hand menu and page chrome are defined ONCE here (SECTIONS + render_page)
 and stamped into every page, so a change here propagates to the whole site.
 """
-import os, re, shutil, html, io
+import os, re, shutil, html, io, json
 import fitz, openpyxl
 from PIL import Image
 
@@ -21,6 +21,41 @@ SITE  = os.path.join(JOB, "assets", "site_assets")
 REF   = os.path.join(JOB, "assets", "reference", "live_site")
 PDF   = os.path.join(JOB, "assets", "source", "Rainbowfishes.2011.pdf")
 XLSX  = os.path.join(JOB, "HotRF.headings.xlsx")
+
+# --- CrossRef enrichment: map a reference's text signature -> DOI (title kept as-is
+#     because the book's printed titles are cleaner than most CrossRef records) ------
+def _ref_sig(text):
+    """Robust key from a reference string: author+year+title-start, punctuation-free."""
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"<[^>]+>", "", text)              # strip span/italic markup
+    return re.sub(r"[^a-z0-9]", "", text.lower())[:50]
+
+_REF_DOI = None
+def _load_ref_doi():
+    global _REF_DOI
+    if _REF_DOI is not None:
+        return _REF_DOI
+    _REF_DOI = {}
+    raw_p = os.path.join(JOB, "assets", "references_raw.json")
+    xref_p = os.path.join(JOB, "assets", "references_crossref.json")
+    if os.path.exists(raw_p) and os.path.exists(xref_p):
+        raw = json.load(open(raw_p, encoding="utf-8"))
+        xref = json.load(open(xref_p, encoding="utf-8"))
+        for i, ref in enumerate(raw):
+            v = xref.get(str(i), {})
+            if v.get("doi"):
+                _REF_DOI[_ref_sig(ref)] = v["doi"]
+    return _REF_DOI
+
+def _enrich_reference(p_html):
+    """Append a DOI link to a reference <p> when CrossRef confidently matched it."""
+    plain = re.sub(r"<[^>]+>", "", p_html)
+    doi = _load_ref_doi().get(_ref_sig(plain))
+    if not doi:
+        return p_html
+    link = ('<a class="doi" href="https://doi.org/%s">https://doi.org/%s</a>'
+            % (html.escape(doi, quote=True), html.escape(doi)))
+    return p_html.rsplit("</p>", 1)[0].rstrip() + " " + link + "</p>"
 
 # printed page + PDF_OFFSET = PDF (1-based) page
 PDF_OFFSET = 16
@@ -882,7 +917,8 @@ def _decoded_items(pdf_pages, out_dir, slug, list_mode=False):
             items.append(("fig", fn, ""))
     return items
 
-def build_section_multipage(title, slug, divider_page, content_pages, subs, next_section=None):
+def build_section_multipage(title, slug, divider_page, content_pages, subs, next_section=None,
+                            enrich_refs=False):
     """Landing (divider hero + hyperlinked contents) + one page per subsidiary heading,
     with within-section next / up nav. No-subsidiary sections render as one page."""
     out_dir = os.path.join(SRC, slug)
@@ -972,7 +1008,11 @@ def build_section_multipage(title, slug, divider_page, content_pages, subs, next
     content = items
     if content and content[0][0] == "head" and _hnorm(content[0][2]) == _hnorm(title):
         content = content[1:]
-    body = hero + _render_items(content, skip_title=title)
+    rendered = _render_items(content, skip_title=title)
+    if enrich_refs:
+        rendered = [_enrich_reference(x) if x.lstrip().startswith("<p>") else x
+                    for x in rendered]
+    body = hero + rendered
     write(os.path.join(out_dir, slug + ".html"),
           render_page(title, chr(10).join(body), active_slug=slug, prefix="../",
                       breadcrumb=["<span>%s</span>" % html.escape(title)]))
@@ -1155,6 +1195,7 @@ p{margin:0 0 18px;font-size:1.05rem}
 .justify p{text-align:justify}
 .contributors{line-height:1.6}
 .section-nav{display:flex;justify-content:space-between;gap:16px;margin-top:36px;padding-top:14px;border-top:1px solid var(--border-muted);font-weight:600}
+a.doi{font-size:.9rem;word-break:break-all}
 
 .image-block{background:#F8FAFC;border:1px solid var(--border-muted);border-radius:4px;
   padding:10px;margin:22px 0;text-align:center}
@@ -1283,7 +1324,8 @@ def main():
                for i, (_t2, s, _d2) in enumerate(SECTIONS)}
     for _t, _s, _dp, _rng in SECTION_BUILD:
         build_section_multipage(_t, _s, _dp, list(_rng), toc_subs(sections, _t),
-                                next_section=next_of.get(_s))
+                                next_section=next_of.get(_s),
+                                enrich_refs=(_s == "sources_of_information"))
     build_background(next_section=next_of.get("background"))
     build_contents()
     build_home()
