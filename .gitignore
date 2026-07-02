@@ -1,0 +1,16 @@
+# --- Generated / regenerable artefacts (rebuild with generator/build.py) ---
+jobs/unmack-fish-page/src/
+jobs/unmack-fish-page/assets/converted/
+
+# --- Large binary input (supplied by user; kept on disk, not in git) ---
+jobs/unmack-fish-page/assets/source/
+
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Throwaway patch / diagnostic scripts ---
+jobs/unmack-fish-page/generator/_*.py
+
+# --- Office lock files ---
+~$*
