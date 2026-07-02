@@ -705,8 +705,12 @@ def species_index_html(species_list, intro_html, family, common, citations, link
             parts.append('        <li><span class="scientific-name">%s</span>' % genus)
             parts.append('          <ul>'); state["cur"] = genus; state["open"] = True
         binom = "%s %s" % (genus, epithet)
-        cit = html.escape(citations.get(binom, ""))
-        label = '<span class="scientific-name">%s</span>' % html.escape(binom) + ((" " + cit) if cit else "")
+        if epithet.startswith("sp."):          # undescribed form: italicise genus only
+            label = ('<span class="scientific-name">%s</span> %s'
+                     % (html.escape(genus), html.escape(epithet)))
+        else:
+            cit = html.escape(citations.get(binom, ""))
+            label = '<span class="scientific-name">%s</span>' % html.escape(binom) + ((" " + cit) if cit else "")
         if (genus, epithet) in linked:
             parts.append('            <li><a href="%s">%s</a></li>' % (linked[(genus, epithet)], label))
         else:
@@ -715,16 +719,36 @@ def species_index_html(species_list, intro_html, family, common, citations, link
     parts.append('      </ul>')
     return "\n".join(parts)
 
+def _index_sortkey(ep):
+    m = re.search(r'"([^"]+)"', ep)
+    return (m.group(1) if m else ep).lower()
+
+def _insert_species(species_list, genus, epithet):
+    """Insert a new (genus, epithet) into a species-index list, alphabetically within the
+    genus's existing contiguous block (so the index groups it under the right genus)."""
+    entry = (genus, epithet, "%s %s" % (genus, epithet))
+    key = _index_sortkey(epithet)
+    idxs = [i for i, e in enumerate(species_list) if e[0] == genus]
+    if not idxs:
+        species_list.append(entry); return
+    pos = idxs[-1] + 1
+    for i in idxs:
+        if _index_sortkey(species_list[i][1]) > key:
+            pos = i; break
+    species_list.insert(pos, entry)
+
 RF_INTRO = ('      <p>The family Melanotaeniidae &mdash; the rainbowfishes &mdash; is the larger '
             'of the two families in the book. Each species below links to its full illustrated '
-            'account, reproduced verbatim from the book with all figures. (The four '
-            '<span class="scientific-name">Melanotaenia splendida</span> subspecies are covered '
-            'within the <span class="scientific-name">M. splendida</span> account.)</p>')
+            'account; the book species are reproduced verbatim with all figures, and a few '
+            'species not in the 2011 book have been added from later scientific literature. (The '
+            'four <span class="scientific-name">Melanotaenia splendida</span> subspecies are '
+            'covered within the <span class="scientific-name">M. splendida</span> account.)</p>')
 
 BE_INTRO = ('      <p>The family Pseudomugilidae &mdash; the blue-eyes &mdash; is a small group of '
             'mostly diminutive, often vividly coloured fishes closely related to the rainbowfishes. '
-            'Each species below links to its full illustrated account, reproduced verbatim from the '
-            'book with all figures.</p>')
+            'Each species below links to its full illustrated account; the book species are '
+            'reproduced verbatim with all figures, and several species described since the 2011 '
+            'book have been added from later scientific literature.</p>')
 
 SECTION_LEAD = {"background": [7, 8, 9], "introduction": [17, 18, 19],
                 "history_of_rainbowfishes_in_captivity": [20, 21, 22]}
@@ -1311,8 +1335,31 @@ def main():
     # New-species accounts compiled from Fishes of Sahul papers (not in the 2011 book).
     # Figures are rendered from the source PDFs (pixmap clip = correct orientation).
     import runpy
-    for _m in ("extract_figs", "make_garylangei", "make_jakora"):
+    for _m in ("extract_figs", "make_garylangei", "make_jakora",
+               "make_kiunga", "make_mangrove", "make_malanda"):
         runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), _m + ".py"))
+
+    # Register the new species so they appear (linked) in the species index pages.
+    NEW_SPECIES = [
+        ("Rainbowfish Species", "Melanotaenia", "garylangei", "melanotaenia_garylangei.html",
+         "Graf, Herder & Hadiaty, 2015"),
+        ("Rainbowfish Species", "Melanotaenia", "jakora", "melanotaenia_jakora.html",
+         "Graf, Ohee, Herder & Haryono, 2023"),
+        ("Rainbowfish Species", "Melanotaenia", 'sp. "Malanda"', "melanotaenia_malanda.html", ""),
+        ("Blue Eye Species", "Kiunga", "auromarginata", "kiunga_auromarginata.html",
+         "Allen, Hammer, Unmack & Storey, 2024"),
+        ("Blue Eye Species", "Kiunga", "filamentosa", "kiunga_filamentosa.html",
+         "Allen, Hammer, Unmack & Storey, 2024"),
+        ("Blue Eye Species", "Kiunga", "leucozona", "kiunga_leucozona.html",
+         "Allen, Hammer, Unmack & Storey, 2024"),
+        ("Blue Eye Species", "Pseudomugil", "halophilus", "pseudomugil_halophilus.html",
+         "Hammer, Allen, Adams & Unmack, 2024"),
+    ]
+    for section, genus, epithet, fname, cit in NEW_SPECIES:
+        linked[(genus, epithet)] = fname
+        if cit:
+            citations["%s %s" % (genus, epithet)] = cit
+        _insert_species(spset[section], genus, epithet)
 
     build_sections(spset, citations, linked)
     SECTION_BUILD = [
